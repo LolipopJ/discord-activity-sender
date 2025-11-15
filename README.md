@@ -11,6 +11,11 @@ pipenv shell
 pre-commit install
 ```
 
+拷贝 `.env.example` 里的内容，新建 `.env`：
+
+- 修改 `DISCORD_TOKEN` 为 Bot 账户的 `authorization` 令牌。
+- 修改 `DISCORD_CHANNEL_ID` 为 Bot 账户与主账户的私聊频道编号。
+
 运行应用：
 
 ```bash
