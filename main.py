@@ -59,12 +59,14 @@ class MyClient(discord.Client):
 
         relation = self.get_relationship(recipientId)
         if relation is not None:
-            self.queried_activities = relation.activities
+            self.queried_activities = [
+                activity.to_dict() for activity in relation.activities
+            ]
             print(
-                f"✅ Updated activities for user ID {recipientId}: {self.queried_activities}"
+                f"✅ Updated activities for user {self.recipient}: {self.queried_activities}"
             )
         else:
-            print(f"❌ No relationship found for user ID {recipientId}.")
+            print(f"❌ No relationship found for user {self.recipient}.")
 
 
 client = MyClient()
@@ -94,12 +96,17 @@ def root():
     return {"message": "Server is running!"}
 
 
-@app.get("/status")
-def status():
+@app.get("/me")
+def me():
     return {
         "bot": "online" if client.is_ready() else "offline",
         "user": str(client.user) if client.user else None,
     }
+
+
+@app.get("/status")
+def status():
+    return client.queried_activities
 
 
 if __name__ == "__main__":
