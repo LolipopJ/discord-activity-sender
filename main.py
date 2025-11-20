@@ -1,26 +1,38 @@
 import asyncio
 import os
+import time
 
 import discord
 import uvicorn
-from discord.ext import tasks
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
 load_dotenv()
 
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
+
+if not DISCORD_TOKEN or not DISCORD_CHANNEL_ID:
+    raise ValueError(
+        "❌ `DISCORD_TOKEN` and `DISCORD_CHANNEL_ID` must be set in environment variables."
+    )
+
 
 class MyClient(discord.Client):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.recipient = None
-        self.queried_activities = []
-
-    async def setup_hook(self) -> None:
-        self.task_query_activities.start()
+        self._recipient = None
+        self._queried_activities = []
+        self._last_query_time = float(0)
+        self._activity_cache_duration = float(
+            os.getenv("DISCORD_ACTIVITY_CACHE_DURATION", 30)
+        )
 
     async def on_ready(self):
-        print(f"✅ Discord Bot Logged in as {self.user}")
+        print(f"✅ Discord client Logged in as {self.user}")
+
+    async def on_error(self, event_method, *args, **kwargs):
+        print(f"❌ An error occurred in {event_method}: ", args, kwargs)
 
     async def on_message(self, message: discord.Message):
         print(f"📨 Message from {message.author}: {message.content}")
@@ -31,60 +43,72 @@ class MyClient(discord.Client):
         if message.content == "ping":
             await message.channel.send("pong")
 
-    @tasks.loop(seconds=5)
-    async def task_query_activities(self):
-        print("🛠️ Running background task...")
+    @property
+    def queried_activities(self):
+        if time.time() - self._last_query_time < self._activity_cache_duration:
+            print(
+                f"ℹ️ Return cached activities for user {self._recipient}: {self._queried_activities}"
+            )
+            return self._queried_activities
 
-        if self.recipient is None:
-            channelId = int(os.getenv("DISCORD_CHANNEL_ID"))
-            channel = self.get_channel(channelId)
+        if self.is_ready() is False:
+            print(
+                "❌ Discord client is not ready. If long time waited, please check if the network was able to connect Discord server."
+            )
+            return []
+
+        if self._recipient is None:
+            channel = self.get_channel(int(DISCORD_CHANNEL_ID))
             if channel is not None:
-                self.recipient = channel.recipient
-                print(f"✅ Set recipient to {self.recipient}.")
+                self._recipient = channel.recipient
+                print(f"✅ Set recipient to {self._recipient}.")
             else:
-                print(f"❌ No Discord channel found for channel ID {channelId}.")
-                return
+                print(
+                    f"❌ No Discord channel found for channel ID {DISCORD_CHANNEL_ID}."
+                )
+                return []
 
-        await self.update_queried_activities()
-
-    @task_query_activities.before_loop
-    async def before_task_query_activities(self):
-        await self.wait_until_ready()
-
-    async def update_queried_activities(self):
-        recipientId = self.recipient.id
+        recipientId = self._recipient.id
         if recipientId is None:
             print("❌ No recipient ID found.")
-            return
+            return []
 
         relation = self.get_relationship(recipientId)
         if relation is not None:
-            self.queried_activities = [
+            self._queried_activities = [
                 activity.to_dict() for activity in relation.activities
             ]
+            self._last_query_time = time.time()
             print(
-                f"✅ Updated activities for user {self.recipient}: {self.queried_activities}"
+                f"✅ Update activities for user {self._recipient}: {self._queried_activities}"
             )
         else:
-            print(f"❌ No relationship found for user {self.recipient}.")
+            print(f"❌ No relationship found for user {self._recipient}.")
+            return []
+
+        return self._queried_activities
+
+    @property
+    def last_query_time(self):
+        return int(self._last_query_time)
 
 
 client = MyClient()
 
 
-async def run_discord_bot():
-    await client.start(os.getenv("DISCORD_TOKEN"))
+async def start_discord_client():
+    await client.start(DISCORD_TOKEN)
 
 
 async def lifespan(app: FastAPI):
-    print("🚀 Starting Discord Bot...")
-    task = asyncio.create_task(run_discord_bot())
+    print("🚀 Starting Discord client...")
+    task = asyncio.create_task(start_discord_client())
     yield
 
     print("🛑 Shutting down...")
     if not client.is_closed():
         await client.close()
-        print("🌙 Discord bot connection was closed.")
+        print("🌙 Discord client connection was closed.")
     task.cancel()
 
 
@@ -99,14 +123,17 @@ def root():
 @app.get("/me")
 def me():
     return {
-        "bot": "online" if client.is_ready() else "offline",
+        "client": "online" if client.is_ready() else "offline",
         "user": str(client.user) if client.user else None,
     }
 
 
-@app.get("/status")
-def status():
-    return client.queried_activities
+@app.get("/activity")
+def activity():
+    return {
+        "activities": client.queried_activities,
+        "last_updated_at": client.last_query_time,
+    }
 
 
 if __name__ == "__main__":

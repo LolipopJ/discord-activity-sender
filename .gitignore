@@ -1,2 +1,6 @@
+# 隐藏文件
 .*/
+
+# 环境变量
 .env
+docker-compose.yml
