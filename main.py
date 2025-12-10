@@ -10,21 +10,37 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
+from igdb import IGDBClient
 from utils import stringify_ids
 
 load_dotenv(override=True)
 
-PORT = int(os.getenv("PORT", 28800))
-PROXY = os.getenv("PROXY")
-PROXY_AUTH = os.getenv("PROXY_AUTH")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
 DISCORD_ACTIVITY_CACHE_DURATION = float(
     os.getenv("DISCORD_ACTIVITY_CACHE_DURATION", 30)
 )
+TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
+TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
+PORT = int(os.getenv("PORT", 28800))
+PROXY = os.getenv("PROXY")
+PROXY_AUTH = os.getenv("PROXY_AUTH")
 
 
-class MyClient(discord.Client):
+proxy = None
+proxy_auth = None
+if PROXY:
+    proxy = PROXY
+    print(f"🔀 Proxy enabled: {proxy}")
+if PROXY_AUTH:
+    user, pwd = PROXY_AUTH.split(":", 1)
+    proxy_auth = aiohttp.BasicAuth(user, pwd)
+    print("🔐 Proxy auth enabled.")
+
+igdb_client = IGDBClient(proxy=proxy, proxy_auth=proxy_auth)
+
+
+class DiscordClient(discord.Client):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._recipient = None
@@ -77,9 +93,10 @@ class MyClient(discord.Client):
 
         relation = self.get_relationship(recipientId)
         if relation is not None:
-            self._queried_activities = [
+            activities = [
                 stringify_ids(activity.to_dict()) for activity in relation.activities
             ]
+            self._queried_activities = activities
             self._last_query_time = time.time()
             print(
                 f"✅ Update activities for user {self._recipient}: {self._queried_activities}"
@@ -95,44 +112,61 @@ class MyClient(discord.Client):
         return int(self._last_query_time)
 
 
-proxy = None
-proxy_auth = None
-if PROXY:
-    proxy = PROXY
-if PROXY_AUTH:
-    user, pwd = PROXY_AUTH.split(":", 1)
-    proxy_auth = aiohttp.BasicAuth(user, pwd)
+discord_client = DiscordClient(proxy=proxy, proxy_auth=proxy_auth)
 
-client = MyClient(proxy=proxy, proxy_auth=proxy_auth)
+
+async def start_igdb_client():
+    if TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET:
+        print("🎮 Starting IGDB client...")
+        print(
+            f"🔑 IGDB-Twitch integration enabled, Twitch client ID: {TWITCH_CLIENT_ID} (client secret prefix: {TWITCH_CLIENT_SECRET[:8]})."
+        )
+        try:
+            await igdb_client.start(
+                client_id=TWITCH_CLIENT_ID, client_secret=TWITCH_CLIENT_SECRET
+            )
+            print("✅️ IGDB client initialized.")
+        except Exception as e:
+            print(f"❌ Failed to initialize IGDB client: {type(e)} {e}")
+            traceback.print_exc()
 
 
 async def start_discord_client():
+    if not DISCORD_TOKEN or not DISCORD_CHANNEL_ID:
+        raise ValueError(
+            "`DISCORD_TOKEN` and `DISCORD_CHANNEL_ID` must be set in environment variables."
+        )
     print("🚀 Starting Discord client...")
-    if proxy:
-        print(f"🔀 Proxy enabled: {proxy}")
-    if proxy_auth:
-        print("🔐 Proxy auth enabled.")
+    print(f"🔑 Discord client token present (prefix: {DISCORD_TOKEN[:8]}).")
     try:
-        if not DISCORD_TOKEN or not DISCORD_CHANNEL_ID:
-            raise ValueError(
-                "❌ `DISCORD_TOKEN` and `DISCORD_CHANNEL_ID` must be set in environment variables."
-            )
-        print(f"🔑 Discord client token present, prefix: {DISCORD_TOKEN[:8]}")
-        await client.start(DISCORD_TOKEN)
+        await discord_client.start(DISCORD_TOKEN)
+        print("✅️ Discord client initialized.")
     except Exception as e:
-        print("❌ Discord client failed to start:", type(e), e)
+        print(f"❌ Failed to initialize Discord client: {type(e)} {e}")
         traceback.print_exc()
 
 
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(start_discord_client())
+    start_igdb_client_task = asyncio.create_task(start_igdb_client())
+    start_discord_client_task = asyncio.create_task(start_discord_client())
+
     yield
 
     print("🛑 Shutting down...")
-    if not client.is_closed():
-        await client.close()
-        print("🌙 Discord client connection was closed.")
-    task.cancel()
+    start_igdb_client_task.cancel()
+    start_discord_client_task.cancel()
+    if not igdb_client.is_closed():
+        try:
+            await igdb_client.close()
+            print("🌙 IGDB client closed.")
+        except Exception as e:
+            print(f"❌ Error closing IGDB client: {type(e)} {e}")
+    if not discord_client.is_closed():
+        try:
+            await discord_client.close()
+            print("🌙 Discord client connection was closed.")
+        except Exception as e:
+            print(f"❌ Error closing Discord client: {type(e)} {e}")
 
 
 app = FastAPI(lifespan=lifespan)
@@ -140,22 +174,24 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 def root():
-    return {"message": "Server is running!"}
+    return {
+        "discord": "online" if discord_client.is_ready() else "offline",
+        "igdb": "ready" if igdb_client.is_ready() else "not ready",
+    }
 
 
 @app.get("/me")
 def me():
     return {
-        "client": "online" if client.is_ready() else "offline",
-        "user": str(client.user) if client.user else None,
+        "user": str(discord_client.user) if discord_client.user else None,
     }
 
 
 @app.get("/activity")
 def activity():
     return {
-        "activities": client.queried_activities,
-        "last_updated_at": client.last_query_time,
+        "activities": discord_client.queried_activities,
+        "last_updated_at": discord_client.last_query_time,
     }
 
 

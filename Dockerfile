@@ -10,7 +10,7 @@ WORKDIR /app
 COPY Pipfile Pipfile.lock ./
 
 # Install dependencies
-RUN pipenv install --deploy --system
+RUN pipenv sync
 
 # Copy application code
 COPY . .
