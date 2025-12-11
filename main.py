@@ -10,8 +10,8 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
+import utils
 from igdb import IGDBClient
-from utils import stringify_ids
 
 load_dotenv(override=True)
 
@@ -64,7 +64,7 @@ class DiscordClient(discord.Client):
             await message.channel.send("pong")
 
     @property
-    def queried_activities(self):
+    async def queried_activities(self):
         if time.time() - self._last_query_time < self._activity_cache_duration:
             print(
                 f"ℹ️ Return cached activities for user {self._recipient}: {self._queried_activities}"
@@ -93,9 +93,40 @@ class DiscordClient(discord.Client):
 
         relation = self.get_relationship(recipientId)
         if relation is not None:
-            activities = [
-                stringify_ids(activity.to_dict()) for activity in relation.activities
-            ]
+            activities = []
+            for activity in relation.activities:
+                activity = activity.to_dict()
+                if (
+                    activity["type"] == int(discord.ActivityType.playing)
+                    and igdb_client.is_ready()
+                ):
+                    game_name = activity["name"]
+                    try:
+                        game_details = await igdb_client.get_game_details(game_name)
+                        if not activity.get("assets"):
+                            cover_url = game_details["cover"]["url"]
+                            activity["assets"] = {
+                                "small_text": "",
+                                "small_image": "",
+                                "large_text": game_details["name"],
+                                "large_image": "https" + cover_url
+                                if cover_url.startswith("//")
+                                else cover_url,
+                            }
+                        if not activity.get("extras"):
+                            activity["extras"] = {
+                                "artworks": utils.flat_artworks_to_urls(
+                                    game_details.get("artworks") or []
+                                ),
+                                "storyline": game_details.get("storyline") or "",
+                                "summary": game_details.get("summary") or "",
+                                "url": game_details.get("url") or "",
+                            }
+                    except Exception as e:
+                        print(
+                            f"❌ Fetch details failed for game {game_name}: {type(e)} {e}"
+                        )
+                activities.append(utils.stringify_ids(activity))
             self._queried_activities = activities
             self._last_query_time = time.time()
             print(
@@ -133,7 +164,7 @@ async def start_igdb_client():
 
 async def start_discord_client():
     if not DISCORD_TOKEN or not DISCORD_CHANNEL_ID:
-        raise ValueError(
+        raise RuntimeError(
             "`DISCORD_TOKEN` and `DISCORD_CHANNEL_ID` must be set in environment variables."
         )
     print("🚀 Starting Discord client...")
@@ -188,9 +219,9 @@ def me():
 
 
 @app.get("/activity")
-def activity():
+async def activity():
     return {
-        "activities": discord_client.queried_activities,
+        "activities": await discord_client.queried_activities,
         "last_updated_at": discord_client.last_query_time,
     }
 

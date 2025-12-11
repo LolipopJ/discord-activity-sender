@@ -1,8 +1,24 @@
 import asyncio
 import time
-from typing import Dict, Optional
+from contextlib import asynccontextmanager
+from typing import List, Optional, TypedDict
 
 import aiohttp
+
+
+class ArtworkTD(TypedDict):
+    id: int
+    url: str
+
+
+class GameTD(TypedDict):
+    id: int
+    artworks: List[ArtworkTD]
+    cover: ArtworkTD
+    name: str
+    storyline: Optional[str]
+    summary: str
+    url: str
 
 
 class IGDBClient:
@@ -11,7 +27,8 @@ class IGDBClient:
         timeout: int = 10,
         proxy: Optional[str] = None,
         proxy_auth: Optional[aiohttp.BasicAuth] = None,
-    ) -> None:
+        game_cache_ttl: int = 60 * 60 * 24,  # 24 hours
+    ):
         self._ready = False
         self._closed = True
 
@@ -29,11 +46,15 @@ class IGDBClient:
         self._refresh_task: Optional[asyncio.Task] = None
         self._refresh_sleep_time: float = 30.0
 
+        self._game_cache: dict[str, dict] = {}
+        self._game_cache_ttl = int(game_cache_ttl)
+        self._game_cache_lock: asyncio.Lock = asyncio.Lock()
+
     async def start(
         self,
         client_id: str,
         client_secret: str,
-    ) -> "IGDBClient":
+    ):
         self._closed = False
 
         self._client_id = client_id
@@ -52,13 +73,13 @@ class IGDBClient:
         self._ready = True
         return self
 
-    def is_ready(self) -> bool:
+    def is_ready(self):
         return self._ready
 
-    def is_closed(self) -> bool:
+    def is_closed(self):
         return self._closed
 
-    async def close(self) -> None:
+    async def close(self):
         self._closed = True
         self._ready = False
         if self._refresh_task:
@@ -66,7 +87,8 @@ class IGDBClient:
         if self._session and not self._session.closed:
             await self._session.close()
 
-    async def request(self, method: str, url: str, **kwargs) -> aiohttp.ClientResponse:
+    @asynccontextmanager
+    async def request(self, method: str, url: str, **kwargs):
         if not self._session:
             raise RuntimeError("IGDB client session not initialized.")
         if not self._token or time.time() >= self._expires_at:
@@ -77,11 +99,42 @@ class IGDBClient:
         headers.setdefault("Authorization", f"Bearer {self._token}")
 
         async with self._session.request(
-            method, url, headers=headers, **kwargs
+            method, f"https://api.igdb.com/v4{url}", headers=headers, **kwargs
         ) as resp:
-            return resp
+            yield resp
 
-    async def _refresh_token(self) -> None:
+    async def get_game_details(self, game_name: str):
+        cache_key = game_name.strip().lower()
+        async with self._game_cache_lock:
+            entry = self._game_cache.get(cache_key)
+            if entry is not None:
+                ts, cached = entry.get("ts"), entry.get("data")
+                if ts and (time.time() - ts) < self._game_cache_ttl:
+                    print(f"ℹ️ Using cached IGDB details for game {game_name}: {cached}")
+                    return cached
+
+        query = f'search "{game_name}"; limit 1; fields artworks.url,cover.url,name,storyline,summary,url;'
+        async with self.request("POST", "/games", data=query) as resp:
+            if resp.status != 200:
+                raise RuntimeError(
+                    f"IGDB API request details for game {game_name} failed with status {resp.status}, reason: {resp.reason}"
+                )
+            data = await resp.json()  # type: List[GameTD]
+            if not data or not isinstance(data, list):
+                raise ValueError(
+                    f"Parse details failed for game {game_name}, response: {await resp.text()}"
+                )
+            result = data[0]
+            if not result:
+                raise ValueError(f"No details found for game {game_name}.")
+
+        async with self._game_cache_lock:
+            self._game_cache[cache_key] = {"ts": time.time(), "data": result}
+
+        print(f"🔎 Fetched IGDB details for game {game_name}: {result}")
+        return result
+
+    async def _refresh_token(self):
         print("🔄 Refreshing Twitch access token...")
         result = await self._get_twitch_app_access_token()
         token = result.get("access_token")
@@ -99,7 +152,7 @@ class IGDBClient:
         else:
             raise RuntimeError(f"Failed to fetch Twitch access token: {result}.")
 
-    async def _get_twitch_app_access_token(self) -> Dict[str, Optional[str]]:
+    async def _get_twitch_app_access_token(self):
         client_id = self._client_id
         client_secret = self._client_secret
 
@@ -135,10 +188,10 @@ class IGDBClient:
         except aiohttp.ClientError as e:
             return {"error": f"request_exception: {e}", "status_code": None}
 
-    def _time_until_refresh(self) -> float:
+    def _time_until_refresh(self):
         return max(0.0, self._expires_at - time.time())
 
-    async def _refresh_loop(self) -> None:
+    async def _refresh_loop(self):
         while not self._closed:
             try:
                 if self._token and self._expires_at > 0:
