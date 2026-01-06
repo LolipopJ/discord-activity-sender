@@ -113,8 +113,8 @@ class DiscordClient(discord.Client):
                                 if cover_url.startswith("//")
                                 else cover_url,
                             }
-                        if not activity.get("extras"):
-                            activity["extras"] = {
+                        if not activity.get("igdb_details"):
+                            activity["igdb_details"] = {
                                 "artworks": utils.flat_artworks_to_urls(
                                     game_details.get("artworks") or []
                                 ),
@@ -219,6 +219,8 @@ def me():
 
 
 @app.get("/activity")
+@app.get("/activities")
+@app.get("/status")
 async def activity():
     return {
         "activities": await discord_client.queried_activities,
