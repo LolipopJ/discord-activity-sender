@@ -51,7 +51,6 @@ python main.py
 应用支持的接口如下：
 
 - `localhost:28800/`：检查服务是否正在运行中。
-- `localhost:28800/me`：检查子账号的登录状态。
 - `localhost:28800/activity`：获取主账号的活动状态信息。
 
 ## 贡献代码

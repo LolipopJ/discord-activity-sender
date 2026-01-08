@@ -204,26 +204,22 @@ app = FastAPI(lifespan=lifespan)
 
 
 @app.get("/")
+@app.get("/status")
 def root():
     return {
+        "service": "running",
         "discord": "online" if discord_client.is_ready() else "offline",
         "igdb": "ready" if igdb_client.is_ready() else "not ready",
     }
 
 
-@app.get("/me")
-def me():
-    return {
-        "user": str(discord_client.user) if discord_client.user else None,
-    }
-
-
 @app.get("/activity")
 @app.get("/activities")
-@app.get("/status")
+@app.get("/presence")
+@app.get("/rich-presence")
 async def activity():
     return {
-        "activities": await discord_client.queried_activities,
+        "data": await discord_client.queried_activities,
         "last_updated_at": discord_client.last_query_time,
     }
 
