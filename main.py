@@ -109,7 +109,7 @@ class DiscordClient(discord.Client):
                                 "small_text": "",
                                 "small_image": "",
                                 "large_text": game_details["name"],
-                                "large_image": "https" + cover_url
+                                "large_image": "https:" + cover_url
                                 if cover_url.startswith("//")
                                 else cover_url,
                             }
